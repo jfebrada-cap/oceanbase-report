@@ -1,0 +1,7 @@
+alibabacloud-oceanbasepro20190901
+alibabacloud-cms20190101
+alibabacloud-tea-openapi
+alibabacloud-tea-util
+pandas
+python-dotenv
+openpyxl

@@ -1,0 +1,19 @@
+{
+  "region": "cn-hangzhou",
+  "oceanbase_instance_ids": [],
+  "metrics": {
+    "cpu_utilization": true,
+    "memory_utilization": true,
+    "disk_utilization": true,
+    "tenant_details": true
+  },
+  "export": {
+    "output_dir": "output",
+    "filename_prefix": "oceanbase_report",
+    "include_timestamp": true
+  },
+  "time_range": {
+    "period": "86400",
+    "statistics": "Average"
+  }
+}
