@@ -228,6 +228,8 @@ class ExcelExporter:
 
         # Columns to exclude from Capacity Assessment tab
         excluded_columns = [
+            # CPU percent metrics (duplicate of cpu_utilization, not needed)
+            'cpu_percent_avg', 'cpu_percent_min', 'cpu_percent_max', 'cpu_percent_p95',
             # Memstore metrics (instance-level, not needed)
             'memstore_percent_avg', 'memstore_percent_min', 'memstore_percent_max', 'memstore_percent_p95',
             # QPS/TPS metrics (aggregate, not detailed enough)
@@ -249,40 +251,91 @@ class ExcelExporter:
         return df_renamed[final_columns]
 
     def _reorder_tenants_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Reorder tenant columns for better readability"""
+        """Reorder tenant columns for better readability with renamed display names"""
+
+        # Rename columns to user-friendly display names
+        rename_map = {
+            'tenant_allocated_cpu': 'Allocated_CPU',
+            'tenant_allocated_memory': 'Allocated_Mem',
+            'tenant_allocated_disk': 'Allocated_Disk',
+            'tenant_actual_disk_usage': 'disk_usage',
+            'cpu_usage_percent_min': 'min_CPU_Util',
+            'cpu_usage_percent_avg': 'avg_CPU_Util',
+            'cpu_usage_percent_max': 'max_CPU_Util',
+            'cpu_usage_percent_p95': 'p95_CPU_Util',
+            'tenant_allocated_log_disk': 'Allocated_log_disk',
+            'tenant_log_disk_usage': 'log_disk_usage',
+            'memory_usage_percent_min': 'min_Mem_Util',
+            'memory_usage_percent_avg': 'avg_Mem_Util',
+            'memory_usage_percent_max': 'max_Mem_Util',
+            'memory_usage_percent_p95': 'p95_Mem_Util',
+        }
+
+        # Apply column renaming
+        df = df.rename(columns=rename_map)
+
+        # Column order as specified by user
         column_order = [
             'instance_id', 'instance_name', 'tenant_id', 'tenant_name',
             'tenant_mode',
 
-            # Tenant Resource Allocation (Capacity Center fields - from DescribeTenant API)
-            'tenant_allocated_cpu',
-            'tenant_allocated_memory',
-            'tenant_actual_disk_usage',
+            # Tenant Resource Allocation
+            'Allocated_CPU',
+            'Allocated_Mem',
+            'Allocated_Disk',
+            'disk_usage',
 
-            # CPU Usage Metrics (from CloudMonitor API)
-            'cpu_usage_percent_avg', 'cpu_usage_percent_max', 'cpu_usage_percent_min', 'cpu_usage_percent_p95',
+            # CPU Usage Metrics
+            'min_CPU_Util', 'avg_CPU_Util', 'max_CPU_Util', 'p95_CPU_Util',
 
-            # Log Disk Allocation
-            'tenant_allocated_log_disk',
+            # Log Disk Allocation and Usage
+            'Allocated_log_disk',
+            'log_disk_usage',
+
+            # Memory Usage Metrics
+            'min_Mem_Util', 'avg_Mem_Util', 'max_Mem_Util', 'p95_Mem_Util',
 
             # Tenant Connection Information
             'max_connections',
-            'active_sessions_avg',
-            'connection_utilization_pct',
 
-            # Memory metrics (from CloudMonitor API) - percentage only
-            'memory_usage_percent_avg', 'memory_usage_percent_max', 'memory_usage_percent_min',
+            # Connection metrics
+            'connection_avg', 'connection_max', 'connection_min', 'connection_p95',
 
-            # Session/Connection metrics (from CloudMonitor API)
-            'active_sessions_max', 'active_sessions_min',
+            # TPS Metrics
+            'tps_avg', 'tps_max', 'tps_min', 'tps_p95',
 
             # Tenant info
             'create_time'
         ]
 
+        # Columns to exclude from Tenants Report tab
+        excluded_columns = [
+            # SQL RT metrics (not needed for monitoring)
+            'sql_avg_rt_ms_avg', 'sql_avg_rt_ms_max', 'sql_avg_rt_ms_min', 'sql_avg_rt_ms_p95',
+            # Network metrics (removed completely per user request)
+            'network_recv_bytes_per_sec_avg', 'network_recv_bytes_per_sec_max', 'network_recv_bytes_per_sec_min', 'network_recv_bytes_per_sec_p95',
+            'network_sent_bytes_per_sec_avg', 'network_sent_bytes_per_sec_max', 'network_sent_bytes_per_sec_min', 'network_sent_bytes_per_sec_p95',
+            # Transaction partition and commit log metrics (removed per user request)
+            'transaction_partition_tps_avg', 'transaction_partition_tps_max', 'transaction_partition_tps_min', 'transaction_partition_tps_p95',
+            'trans_commit_log_count_avg', 'trans_commit_log_count_max', 'trans_commit_log_count_min', 'trans_commit_log_count_p95',
+            'trans_commit_log_sync_rt_ms_avg', 'trans_commit_log_sync_rt_ms_max', 'trans_commit_log_sync_rt_ms_min', 'trans_commit_log_sync_rt_ms_p95',
+            # Transaction log size metrics (removed per user request)
+            'clog_trans_log_size_mb_avg', 'clog_trans_log_size_mb_max', 'clog_trans_log_size_mb_min', 'clog_trans_log_size_mb_p95',
+            # I/O response time metrics (removed per user request)
+            'io_read_rt_us_avg', 'io_read_rt_us_max', 'io_read_rt_us_min', 'io_read_rt_us_p95',
+            'io_write_rt_us_avg', 'io_write_rt_us_max', 'io_write_rt_us_min', 'io_write_rt_us_p95',
+            # Request queue time metrics (removed per user request)
+            'request_queue_time_us_avg', 'request_queue_time_us_max', 'request_queue_time_us_min', 'request_queue_time_us_p95',
+            # Log disk used bytes (redundant - already have log_disk_usage)
+            'log_disk_used_bytes_avg', 'log_disk_used_bytes_max', 'log_disk_used_bytes_min', 'log_disk_used_bytes_p95',
+            # Connection utilization percentage (removed per user request)
+            'connection_utilization_pct'
+        ]
+
         # Only include columns that exist
         available_columns = [col for col in column_order if col in df.columns]
-        remaining_columns = [col for col in df.columns if col not in column_order]
+        remaining_columns = [col for col in df.columns
+                           if col not in column_order and col not in excluded_columns]
         final_columns = available_columns + remaining_columns
 
         return df[final_columns]

@@ -297,22 +297,35 @@ class OceanBaseReporter:
                         memory_obj = resource.memory
                         tenant_info['tenant_allocated_memory'] = getattr(memory_obj, 'total_memory', 0)
 
-                    # Disk usage (actual usage, not allocation)
+                    # Get unit_num for calculations
+                    unit_num = getattr(resource, 'unit_num', 0)
+
+                    # Disk allocation and usage
+                    # NOTE: SDK only provides 'used_disk_size' in disk_size object
+                    # Total allocated disk must be calculated from unit_num (not available in API)
                     if hasattr(resource, 'disk_size') and resource.disk_size:
                         disk_obj = resource.disk_size
+                        # The SDK doesn't provide total_disk_size, only used_disk_size
+                        # We'll use used_disk_size for both fields since total isn't available
+                        tenant_info['tenant_allocated_disk'] = 0  # Not available in API
                         tenant_info['tenant_actual_disk_usage'] = getattr(disk_obj, 'used_disk_size', 0)
 
-                    # Log disk allocation (total only, no per-unit)
+                    # Log disk allocation and usage
+                    # NOTE: SDK only provides 'total_log_disk' and 'unit_log_disk'
+                    # Used log disk size is not available in the DescribeTenant API
                     if hasattr(resource, 'log_disk_size') and resource.log_disk_size:
                         log_disk_obj = resource.log_disk_size
                         tenant_info['tenant_allocated_log_disk'] = getattr(log_disk_obj, 'total_log_disk', 0)
+                        tenant_info['tenant_log_disk_usage'] = 0  # Not available in API - would need CloudMonitor metrics
 
                 else:
                     # Fallback to basic tenant info if TenantResource not available
                     tenant_info['tenant_allocated_cpu'] = tenant.cpu if hasattr(tenant, 'cpu') else 0
                     tenant_info['tenant_allocated_memory'] = tenant.mem if hasattr(tenant, 'mem') else 0
+                    tenant_info['tenant_allocated_disk'] = 0
                     tenant_info['tenant_actual_disk_usage'] = 0
                     tenant_info['tenant_allocated_log_disk'] = 0
+                    tenant_info['tenant_log_disk_usage'] = 0
 
                 return tenant_info
 
@@ -458,6 +471,7 @@ class OceanBaseReporter:
 
         # OPTIMIZED: Only fetch metrics that are commonly available
         # Tested and verified to return data for most tenants
+        # UPDATED: Renamed metrics to follow consistent pattern (qps_*, tps_*, sessions_*, connection_*)
         tenant_metric_map = {
             # CPU metrics - AVAILABLE
             'cpu_usage_percent_tenant': 'cpu_usage_percent',
@@ -470,12 +484,12 @@ class OceanBaseReporter:
             # 'memstore_used_tenant': 'memstore_used_mb',
             # 'memstore_total_tenant': 'memstore_total_mb',
 
-            # Session/Connection metrics - AVAILABLE
-            'active_sessions_tenant': 'active_sessions',
-            'all_session': 'all_session',
+            # Session/Connection metrics - AVAILABLE (renamed to sessions_* pattern)
+            'active_sessions_tenant': 'sessions',
+            'all_session': 'connection',
 
-            # SQL Performance metrics - AVAILABLE
-            'sql_all_count': 'sql_qps',
+            # SQL Performance metrics - AVAILABLE (renamed to qps_* pattern)
+            'sql_all_count': 'qps',
             'sql_all_rt': 'sql_avg_rt_ms',
             # SQL breakdown by type - AVAILABLE (verified via testing)
             'sql_select_count': 'sql_select_qps',
@@ -484,8 +498,8 @@ class OceanBaseReporter:
             'sql_delete_count': 'sql_delete_qps',
             'sql_replace_count': 'sql_replace_qps',
 
-            # Transaction metrics - AVAILABLE
-            'transaction_count': 'transaction_tps',
+            # Transaction metrics - AVAILABLE (renamed to tps_* pattern)
+            'transaction_count': 'tps',
             # 'transaction_rt': 'transaction_avg_rt_us',  # Often returns NaN
             'transaction_partition_count': 'transaction_partition_tps',
             'trans_commit_log_count': 'trans_commit_log_count',
@@ -516,9 +530,11 @@ class OceanBaseReporter:
             # 'ob_waiteven_count': 'wait_event_count',
             # 'ob_sql_event': 'sql_event_count',
 
-            # Storage metrics - TEST IF AVAILABLE
-            # 'ob_tenant_log_disk_total_bytes': 'log_disk_total_gb',
-            # 'ob_tenant_log_disk_used_bytes': 'log_disk_used_gb',
+            # Storage metrics - TESTING
+            # Note: These metrics will be fetched and merged into tenant data
+            'ob_tenant_log_disk_total_bytes': 'log_disk_total_bytes',
+            'ob_tenant_log_disk_used_bytes': 'log_disk_used_bytes',
+            'ob_tenant_data_disk_total_bytes': 'data_disk_total_bytes',  # TESTING - for Allocated_Disk
             # 'ob_tenant_server_required_size': 'server_required_size_gb',
             # 'ob_tenant_server_data_size': 'data_size_gb',
             # 'ob_tenant_binlog_disk_used': 'binlog_disk_used_gb',
@@ -661,6 +677,17 @@ class OceanBaseReporter:
                 )
                 if tenant_metrics:
                     tenant.update(tenant_metrics)
+
+                # Post-process: Convert disk metrics from bytes to GB
+                # CloudMonitor returns bytes, we need to populate GB fields
+
+                # Convert log disk used bytes to GB and populate log_disk_usage
+                if 'log_disk_used_bytes_avg' in tenant:
+                    tenant['tenant_log_disk_usage'] = round(tenant['log_disk_used_bytes_avg'] / (1024**3), 2)
+
+                # Convert data disk total bytes to GB and populate Allocated_Disk
+                if 'data_disk_total_bytes_avg' in tenant:
+                    tenant['tenant_allocated_disk'] = round(tenant['data_disk_total_bytes_avg'] / (1024**3), 2)
 
                 return tenant
             except Exception as e:

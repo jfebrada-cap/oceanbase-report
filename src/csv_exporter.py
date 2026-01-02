@@ -76,9 +76,6 @@ class CSVExporter:
             'disk_utilization_pct',
 
             # ALL Instance CloudMonitor Metrics (avg/min/max/p95)
-            # CPU metrics
-            'cpu_percent_avg', 'cpu_percent_min', 'cpu_percent_max', 'cpu_percent_p95',
-
             # Active sessions
             'active_sessions_avg', 'active_sessions_min', 'active_sessions_max', 'active_sessions_p95',
 
@@ -135,7 +132,7 @@ class CSVExporter:
         filename_prefix: str = 'oceanbase_tenants'
     ) -> str:
         """
-        Export tenants information to CSV
+        Export tenants information to CSV with renamed columns
 
         Args:
             tenants_data: List of tenant dictionaries
@@ -154,63 +151,78 @@ class CSVExporter:
 
         df = pd.DataFrame(tenants_data)
 
-        # Reorder columns for better readability
+        # Rename columns to user-friendly display names
+        rename_map = {
+            'tenant_allocated_cpu': 'Allocated_CPU',
+            'tenant_allocated_memory': 'Allocated_Mem',
+            'tenant_allocated_disk': 'Allocated_Disk',
+            'tenant_actual_disk_usage': 'disk_usage',
+            'cpu_usage_percent_min': 'min_CPU_Util',
+            'cpu_usage_percent_avg': 'avg_CPU_Util',
+            'cpu_usage_percent_max': 'max_CPU_Util',
+            'cpu_usage_percent_p95': 'p95_CPU_Util',
+            'tenant_allocated_log_disk': 'Allocated_log_disk',
+            'tenant_log_disk_usage': 'log_disk_usage',
+            'memory_usage_percent_min': 'min_Mem_Util',
+            'memory_usage_percent_avg': 'avg_Mem_Util',
+            'memory_usage_percent_max': 'max_Mem_Util',
+            'memory_usage_percent_p95': 'p95_Mem_Util',
+        }
+
+        # Apply column renaming
+        df = df.rename(columns=rename_map)
+
+        # Reorder columns for better readability (using renamed column names)
         column_order = [
             'instance_id', 'instance_name', 'tenant_id', 'tenant_name',
             'tenant_mode',
 
-            # Tenant Resource Allocation (Capacity Center fields - from DescribeTenant API)
-            'tenant_allocated_cpu',
-            'tenant_allocated_memory',
-            'tenant_actual_disk_usage',
-            'tenant_allocated_log_disk',
+            # Tenant Resource Allocation
+            'Allocated_CPU',
+            'Allocated_Mem',
+            'Allocated_Disk',
+            'disk_usage',
 
-            # Tenant Connection Information
-            'max_connections',
-            'active_sessions_avg',
-            'connection_utilization_pct',
-
-            # CPU Usage Metrics (from CloudMonitor API)
-            'cpu_usage_percent_avg', 'cpu_usage_percent_max', 'cpu_usage_percent_min', 'cpu_usage_percent_p95',
+            # CPU Usage Metrics
+            'min_CPU_Util', 'avg_CPU_Util', 'max_CPU_Util', 'p95_CPU_Util',
             'cpu_usage_avg_cores_avg', 'cpu_usage_avg_cores_max', 'cpu_usage_avg_cores_min', 'cpu_usage_avg_cores_p95',
 
-            # Memory metrics (from CloudMonitor API)
-            'memory_usage_percent_avg', 'memory_usage_percent_max', 'memory_usage_percent_min', 'memory_usage_percent_p95',
+            # Log Disk Allocation and Usage
+            'Allocated_log_disk',
+            'log_disk_usage',
+
+            # Memory Usage Metrics
+            'min_Mem_Util', 'avg_Mem_Util', 'max_Mem_Util', 'p95_Mem_Util',
             'memstore_percent_avg', 'memstore_percent_max', 'memstore_percent_min', 'memstore_percent_p95',
             'memstore_used_mb_avg', 'memstore_used_mb_max', 'memstore_used_mb_min', 'memstore_used_mb_p95',
             'memstore_total_mb_avg', 'memstore_total_mb_max', 'memstore_total_mb_min', 'memstore_total_mb_p95',
 
-            # Session/Connection metrics (from CloudMonitor API)
-            'active_sessions_max', 'active_sessions_min', 'active_sessions_p95',
-            'all_session_avg', 'all_session_max', 'all_session_min', 'all_session_p95',
+            # Tenant Connection Information
+            'max_connections',
+            'sessions_avg',
 
-            # SQL Performance Metrics
-            'sql_qps_avg', 'sql_qps_max', 'sql_qps_min', 'sql_qps_p95',
-            'sql_avg_rt_ms_avg', 'sql_avg_rt_ms_max', 'sql_avg_rt_ms_min', 'sql_avg_rt_ms_p95',
+            # Session/Connection metrics (from CloudMonitor API)
+            'sessions_max', 'sessions_min', 'sessions_p95',
+            'connection_avg', 'connection_max', 'connection_min', 'connection_p95',
+
+            # QPS Metrics
+            'qps_avg', 'qps_max', 'qps_min', 'qps_p95',
             'sql_select_qps_avg', 'sql_select_qps_max', 'sql_select_qps_min', 'sql_select_qps_p95',
             'sql_insert_qps_avg', 'sql_insert_qps_max', 'sql_insert_qps_min', 'sql_insert_qps_p95',
             'sql_update_qps_avg', 'sql_update_qps_max', 'sql_update_qps_min', 'sql_update_qps_p95',
             'sql_delete_qps_avg', 'sql_delete_qps_max', 'sql_delete_qps_min', 'sql_delete_qps_p95',
             'sql_replace_qps_avg', 'sql_replace_qps_max', 'sql_replace_qps_min', 'sql_replace_qps_p95',
 
-            # Transaction Metrics
-            'transaction_tps_avg', 'transaction_tps_max', 'transaction_tps_min', 'transaction_tps_p95',
+            # TPS Metrics
+            'tps_avg', 'tps_max', 'tps_min', 'tps_p95',
             'transaction_avg_rt_us_avg', 'transaction_avg_rt_us_max', 'transaction_avg_rt_us_min', 'transaction_avg_rt_us_p95',
-            'transaction_partition_tps_avg', 'transaction_partition_tps_max', 'transaction_partition_tps_min', 'transaction_partition_tps_p95',
-            'trans_commit_log_count_avg', 'trans_commit_log_count_max', 'trans_commit_log_count_min', 'trans_commit_log_count_p95',
-            'trans_commit_log_sync_rt_ms_avg', 'trans_commit_log_sync_rt_ms_max', 'trans_commit_log_sync_rt_ms_min', 'trans_commit_log_sync_rt_ms_p95',
 
-            # Transaction Log Size
-            'clog_trans_log_size_mb_avg', 'clog_trans_log_size_mb_max', 'clog_trans_log_size_mb_min', 'clog_trans_log_size_mb_p95',
-
-            # I/O Metrics
+            # I/O Operations Metrics
             'io_ops_per_sec_avg', 'io_ops_per_sec_max', 'io_ops_per_sec_min', 'io_ops_per_sec_p95',
             'io_avg_rt_us_avg', 'io_avg_rt_us_max', 'io_avg_rt_us_min', 'io_avg_rt_us_p95',
             'io_throughput_bytes_avg', 'io_throughput_bytes_max', 'io_throughput_bytes_min', 'io_throughput_bytes_p95',
             'io_read_ops_per_sec_avg', 'io_read_ops_per_sec_max', 'io_read_ops_per_sec_min', 'io_read_ops_per_sec_p95',
             'io_write_ops_per_sec_avg', 'io_write_ops_per_sec_max', 'io_write_ops_per_sec_min', 'io_write_ops_per_sec_p95',
-            'io_read_rt_us_avg', 'io_read_rt_us_max', 'io_read_rt_us_min', 'io_read_rt_us_p95',
-            'io_write_rt_us_avg', 'io_write_rt_us_max', 'io_write_rt_us_min', 'io_write_rt_us_p95',
             'io_read_bytes_per_sec_avg', 'io_read_bytes_per_sec_max', 'io_read_bytes_per_sec_min', 'io_read_bytes_per_sec_p95',
             'io_write_bytes_per_sec_avg', 'io_write_bytes_per_sec_max', 'io_write_bytes_per_sec_min', 'io_write_bytes_per_sec_p95',
 
@@ -218,23 +230,15 @@ class CSVExporter:
             'cache_hit_rate_percent_avg', 'cache_hit_rate_percent_max', 'cache_hit_rate_percent_min', 'cache_hit_rate_percent_p95',
             'cache_size_mb_avg', 'cache_size_mb_max', 'cache_size_mb_min', 'cache_size_mb_p95',
 
-            # Queue Metrics
-            'request_queue_time_us_avg', 'request_queue_time_us_max', 'request_queue_time_us_min', 'request_queue_time_us_p95',
-
             # Database Wait Events
             'wait_event_count_avg', 'wait_event_count_max', 'wait_event_count_min', 'wait_event_count_p95',
             'sql_event_count_avg', 'sql_event_count_max', 'sql_event_count_min', 'sql_event_count_p95',
 
             # Storage Metrics (tenant-level disk usage)
             'log_disk_total_gb_avg', 'log_disk_total_gb_max', 'log_disk_total_gb_min', 'log_disk_total_gb_p95',
-            'log_disk_used_gb_avg', 'log_disk_used_gb_max', 'log_disk_used_gb_min', 'log_disk_used_gb_p95',
             'server_required_size_gb_avg', 'server_required_size_gb_max', 'server_required_size_gb_min', 'server_required_size_gb_p95',
             'data_size_gb_avg', 'data_size_gb_max', 'data_size_gb_min', 'data_size_gb_p95',
             'binlog_disk_used_gb_avg', 'binlog_disk_used_gb_max', 'binlog_disk_used_gb_min', 'binlog_disk_used_gb_p95',
-
-            # Network Metrics
-            'network_recv_bytes_per_sec_avg', 'network_recv_bytes_per_sec_max', 'network_recv_bytes_per_sec_min', 'network_recv_bytes_per_sec_p95',
-            'network_sent_bytes_per_sec_avg', 'network_sent_bytes_per_sec_max', 'network_sent_bytes_per_sec_min', 'network_sent_bytes_per_sec_p95',
 
             # Uptime
             'uptime_seconds_avg', 'uptime_seconds_max', 'uptime_seconds_min', 'uptime_seconds_p95',

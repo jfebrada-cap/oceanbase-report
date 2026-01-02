@@ -74,8 +74,14 @@ def main():
     parser.add_argument(
         '--parallel-workers',
         type=int,
-        default=5,
-        help='Number of parallel workers for tenant metric fetching (default: 5, set to 1 to disable parallelism)'
+        default=20,
+        help='Number of parallel workers for tenant metric fetching (default: 20, recommended: 20-50 for faster extraction)'
+    )
+    parser.add_argument(
+        '--instance-workers',
+        type=int,
+        default=10,
+        help='Number of parallel workers for instance processing (default: 10, recommended: 5-15 depending on instance count)'
     )
 
     args = parser.parse_args()
@@ -106,7 +112,8 @@ def main():
     print(f"Time Period: {period_desc}")
     if args.lookback_days:
         print(f"Custom Lookback: {args.lookback_days} days")
-    print(f"Parallel Workers: {args.parallel_workers} {'(parallel mode enabled)' if args.parallel_workers > 1 else '(sequential mode)'}")
+    print(f"Instance Workers: {args.instance_workers} (parallel instance processing)")
+    print(f"Tenant Workers: {args.parallel_workers} (parallel tenant metric fetching)")
     print()
 
     # Load configuration
@@ -164,103 +171,102 @@ def main():
         print("List-only mode: Exiting without extracting metrics")
         return 0
 
-    # Process each instance
+    # Process instances in parallel
     comprehensive_data = []
     tenants_data = []
 
-    for idx, instance_id in enumerate(instance_ids, 1):
-        print(f"[{idx}/{len(instance_ids)}] Processing instance: {instance_id}")
-        print("-" * 70)
+    def process_single_instance(instance_id: str, idx: int) -> tuple:
+        """
+        Process a single OceanBase instance and its tenants
 
-        # Get instance details
-        instance_details = reporter.get_instance_details(instance_id)
-        if not instance_details:
-            print(f"  ✗ Failed to get instance details")
-            continue
+        Returns:
+            Tuple of (instance_data, tenants_list, instance_name, success)
+        """
+        try:
+            # Get instance details
+            instance_details = reporter.get_instance_details(instance_id)
+            if not instance_details:
+                return None, [], instance_id, False
 
-        print(f"  Instance Name: {instance_details.get('instance_name', 'N/A')}")
-        print(f"  Status: {instance_details.get('status', 'N/A')}")
-        print(f"  Spec - CPU: {instance_details.get('cpu', 'N/A')} cores, "
-              f"Memory: {instance_details.get('memory', 'N/A')} GB, "
-              f"Disk: {instance_details.get('disk_size', 'N/A')} GB")
+            instance_name = instance_details.get('instance_name', 'N/A')
 
-        # Prepare instance data
-        instance_data = instance_details.copy()
+            # Prepare instance data
+            instance_data = instance_details.copy()
 
-        # Calculate disk utilization percentage
-        if instance_details.get('total_storage') and instance_details.get('total_storage') > 0:
-            used_disk = instance_data.get('used_storage', 0)
-            total_disk = instance_details.get('total_storage', 0)
-            if total_disk > 0:
-                disk_util_pct = (used_disk / total_disk) * 100
-                instance_data['disk_utilization_pct'] = round(disk_util_pct, 2)
-                print(f"  Resource Usage:")
-                print(f"    Disk: {used_disk:.2f} GB used / {total_disk} GB total ({disk_util_pct:.2f}%)")
+            # Calculate disk utilization percentage
+            if instance_details.get('total_storage') and instance_details.get('total_storage') > 0:
+                used_disk = instance_data.get('used_storage', 0)
+                total_disk = instance_details.get('total_storage', 0)
+                if total_disk > 0:
+                    disk_util_pct = (used_disk / total_disk) * 100
+                    instance_data['disk_utilization_pct'] = round(disk_util_pct, 2)
 
-        # Get utilization metrics (avg/min/max/P95)
-        utilization_metrics = reporter.get_utilization_metrics(
-            instance_id,
-            start_time=start_time.isoformat(),
-            end_time=end_time.isoformat(),
-            period_desc=period_desc
-        )
-        if utilization_metrics:
-            instance_data.update(utilization_metrics)
+            # Get utilization metrics (avg/min/max/P95)
+            utilization_metrics = reporter.get_utilization_metrics(
+                instance_id,
+                start_time=start_time.isoformat(),
+                end_time=end_time.isoformat(),
+                period_desc=period_desc
+            )
+            if utilization_metrics:
+                instance_data.update(utilization_metrics)
 
-        # Get tenants
-        print("  Fetching tenants...")
-        tenants = reporter.list_tenants(instance_id)
-        print(f"    Found {len(tenants)} tenant(s)")
+            # Get tenants
+            tenants = reporter.list_tenants(instance_id)
 
-        if tenants:
-            # Use parallel or sequential fetching based on --parallel-workers argument
-            if args.parallel_workers > 1:
-                # Parallel mode
+            # Fetch tenant metrics in parallel
+            tenants_with_metrics = []
+            if tenants:
                 tenants_with_metrics = reporter.fetch_tenants_parallel(
                     instance_id=instance_id,
-                    instance_name=instance_details.get('instance_name', 'N/A'),
+                    instance_name=instance_name,
                     tenants=tenants,
                     start_time=start_time.isoformat(),
                     end_time=end_time.isoformat(),
                     max_workers=args.parallel_workers
                 )
-                tenants_data.extend(tenants_with_metrics)
-            else:
-                # Sequential mode (original behavior)
-                print("    Fetching tenant metrics (sequential mode)...")
-                for idx, tenant in enumerate(tenants, 1):
-                    tenant['instance_id'] = instance_id
-                    tenant['instance_name'] = instance_details.get('instance_name', 'N/A')
 
-                    # Get detailed tenant resource allocation (from DescribeTenant API)
-                    tenant_details = reporter.get_tenant_details(
-                        instance_id,
-                        tenant['tenant_id']
-                    )
-                    if tenant_details:
-                        # Merge detailed allocation info (will include tenant_allocated_cpu, etc.)
-                        tenant.update(tenant_details)
+            return instance_data, tenants_with_metrics, instance_name, True
 
-                    # Get comprehensive tenant metrics (from CloudMonitor API)
-                    tenant_metrics = reporter.get_tenant_metrics(
-                        instance_id,
-                        tenant['tenant_id'],
-                        start_time=start_time.isoformat(),
-                        end_time=end_time.isoformat()
-                    )
-                    if tenant_metrics:
-                        tenant.update(tenant_metrics)
+        except Exception as e:
+            print(f"\n⚠️  Error processing instance {instance_id}: {str(e)}")
+            return None, [], instance_id, False
 
-                    tenants_data.append(tenant)
+    # Use ThreadPoolExecutor for parallel instance processing
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-                    if idx % 10 == 0:
-                        print(f"      Processed {idx}/{len(tenants)} tenants...")
+    print(f"Processing {len(instance_ids)} instances with {args.instance_workers} parallel workers...")
+    print()
 
-                print(f"    ✓ Completed fetching metrics for {len(tenants)} tenant(s)")
+    completed_count = 0
+    with ThreadPoolExecutor(max_workers=args.instance_workers) as executor:
+        # Submit all instance processing tasks
+        future_to_instance = {
+            executor.submit(process_single_instance, instance_id, idx): (instance_id, idx)
+            for idx, instance_id in enumerate(instance_ids, 1)
+        }
 
-        comprehensive_data.append(instance_data)
-        print(f"  ✓ Completed")
-        print()
+        # Process results as they complete
+        for future in as_completed(future_to_instance):
+            instance_id, idx = future_to_instance[future]
+            try:
+                instance_data, instance_tenants, instance_name, success = future.result()
+
+                if success and instance_data:
+                    comprehensive_data.append(instance_data)
+                    tenants_data.extend(instance_tenants)
+                    completed_count += 1
+
+                    print(f"[{completed_count}/{len(instance_ids)}] ✓ Completed: {instance_name} ({instance_id}) - {len(instance_tenants)} tenant(s)")
+                else:
+                    print(f"[{idx}/{len(instance_ids)}] ✗ Failed: {instance_id}")
+
+            except Exception as e:
+                print(f"[{idx}/{len(instance_ids)}] ✗ Exception processing {instance_id}: {str(e)}")
+
+    print()
+    print(f"✓ Parallel processing completed: {completed_count}/{len(instance_ids)} instances successful")
+    print()
 
     # Export comprehensive reports
     print("=" * 70)
@@ -285,17 +291,9 @@ def main():
         capacity_csv_path = os.path.join(temp_dir, f'oceanbase_capacity_assessment{freq_suffix}.csv')
         tenants_csv_path = os.path.join(temp_dir, f'oceanbase_tenants{freq_suffix}.csv')
 
-        # Calculate connection utilization percentage for each tenant
-        for tenant in tenants_data:
-            max_conn = tenant.get('max_connections', 0)
-            active_sess_avg = tenant.get('active_sessions_avg', 0)
-
-            # Calculate connection utilization percentage
-            if max_conn and max_conn > 0:
-                conn_util_pct = (active_sess_avg / max_conn) * 100
-                tenant['connection_utilization_pct'] = round(conn_util_pct, 2)
-            else:
-                tenant['connection_utilization_pct'] = 0.0
+        # NOTE: connection_utilization_pct calculation removed per user request (2026-01-02)
+        # Previously calculated: (sessions_avg / max_connections) * 100
+        # Column has been removed from the Tenants Report tab
 
         # Export to temporary CSV files
         import pandas as pd
