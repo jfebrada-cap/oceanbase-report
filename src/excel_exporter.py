@@ -226,9 +226,24 @@ class ExcelExporter:
             'create_time'
         ]
 
+        # Columns to exclude from Capacity Assessment tab
+        excluded_columns = [
+            # Memstore metrics (instance-level, not needed)
+            'memstore_percent_avg', 'memstore_percent_min', 'memstore_percent_max', 'memstore_percent_p95',
+            # QPS/TPS metrics (aggregate, not detailed enough)
+            'qps_avg', 'qps_min', 'qps_max', 'qps_p95',
+            'tps_avg', 'tps_min', 'tps_max', 'tps_p95',
+            'qps_rt_ms_avg', 'qps_rt_ms_min', 'qps_rt_ms_max', 'qps_rt_ms_p95',
+            'tps_rt_ms_avg', 'tps_rt_ms_min', 'tps_rt_ms_max', 'tps_rt_ms_p95',
+            # I/O bytes metrics (bytes per sec, too granular)
+            'io_read_bytes_per_sec_avg', 'io_read_bytes_per_sec_min', 'io_read_bytes_per_sec_max', 'io_read_bytes_per_sec_p95',
+            'io_write_bytes_per_sec_avg', 'io_write_bytes_per_sec_min', 'io_write_bytes_per_sec_max', 'io_write_bytes_per_sec_p95'
+        ]
+
         # Only include columns that exist
         available_columns = [col for col in column_order if col in df_renamed.columns]
-        remaining_columns = [col for col in df_renamed.columns if col not in column_order]
+        remaining_columns = [col for col in df_renamed.columns
+                           if col not in column_order and col not in excluded_columns]
         final_columns = available_columns + remaining_columns
 
         return df_renamed[final_columns]
@@ -252,12 +267,14 @@ class ExcelExporter:
 
             # Tenant Connection Information
             'max_connections',
+            'active_sessions_avg',
+            'connection_utilization_pct',
 
             # Memory metrics (from CloudMonitor API) - percentage only
             'memory_usage_percent_avg', 'memory_usage_percent_max', 'memory_usage_percent_min',
 
             # Session/Connection metrics (from CloudMonitor API)
-            'active_sessions_avg', 'active_sessions_max', 'active_sessions_min',
+            'active_sessions_max', 'active_sessions_min',
 
             # Tenant info
             'create_time'

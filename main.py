@@ -71,6 +71,12 @@ def main():
         default=None,
         help='Number of days to look back for metrics (overrides frequency default). Example: --lookback-days 7 for 7-day P95 in daily reports'
     )
+    parser.add_argument(
+        '--parallel-workers',
+        type=int,
+        default=5,
+        help='Number of parallel workers for tenant metric fetching (default: 5, set to 1 to disable parallelism)'
+    )
 
     args = parser.parse_args()
 
@@ -100,6 +106,7 @@ def main():
     print(f"Time Period: {period_desc}")
     if args.lookback_days:
         print(f"Custom Lookback: {args.lookback_days} days")
+    print(f"Parallel Workers: {args.parallel_workers} {'(parallel mode enabled)' if args.parallel_workers > 1 else '(sequential mode)'}")
     print()
 
     # Load configuration
@@ -206,36 +213,50 @@ def main():
         print(f"    Found {len(tenants)} tenant(s)")
 
         if tenants:
-            print("    Fetching tenant metrics...")
-            for idx, tenant in enumerate(tenants, 1):
-                tenant['instance_id'] = instance_id
-                tenant['instance_name'] = instance_details.get('instance_name', 'N/A')
-
-                # Get detailed tenant resource allocation (from DescribeTenant API)
-                tenant_details = reporter.get_tenant_details(
-                    instance_id,
-                    tenant['tenant_id']
-                )
-                if tenant_details:
-                    # Merge detailed allocation info (will include tenant_allocated_cpu, etc.)
-                    tenant.update(tenant_details)
-
-                # Get comprehensive tenant metrics (from CloudMonitor API)
-                tenant_metrics = reporter.get_tenant_metrics(
-                    instance_id,
-                    tenant['tenant_id'],
+            # Use parallel or sequential fetching based on --parallel-workers argument
+            if args.parallel_workers > 1:
+                # Parallel mode
+                tenants_with_metrics = reporter.fetch_tenants_parallel(
+                    instance_id=instance_id,
+                    instance_name=instance_details.get('instance_name', 'N/A'),
+                    tenants=tenants,
                     start_time=start_time.isoformat(),
-                    end_time=end_time.isoformat()
+                    end_time=end_time.isoformat(),
+                    max_workers=args.parallel_workers
                 )
-                if tenant_metrics:
-                    tenant.update(tenant_metrics)
+                tenants_data.extend(tenants_with_metrics)
+            else:
+                # Sequential mode (original behavior)
+                print("    Fetching tenant metrics (sequential mode)...")
+                for idx, tenant in enumerate(tenants, 1):
+                    tenant['instance_id'] = instance_id
+                    tenant['instance_name'] = instance_details.get('instance_name', 'N/A')
 
-                tenants_data.append(tenant)
+                    # Get detailed tenant resource allocation (from DescribeTenant API)
+                    tenant_details = reporter.get_tenant_details(
+                        instance_id,
+                        tenant['tenant_id']
+                    )
+                    if tenant_details:
+                        # Merge detailed allocation info (will include tenant_allocated_cpu, etc.)
+                        tenant.update(tenant_details)
 
-                if idx % 10 == 0:
-                    print(f"      Processed {idx}/{len(tenants)} tenants...")
+                    # Get comprehensive tenant metrics (from CloudMonitor API)
+                    tenant_metrics = reporter.get_tenant_metrics(
+                        instance_id,
+                        tenant['tenant_id'],
+                        start_time=start_time.isoformat(),
+                        end_time=end_time.isoformat()
+                    )
+                    if tenant_metrics:
+                        tenant.update(tenant_metrics)
 
-            print(f"    ✓ Completed fetching metrics for {len(tenants)} tenant(s)")
+                    tenants_data.append(tenant)
+
+                    if idx % 10 == 0:
+                        print(f"      Processed {idx}/{len(tenants)} tenants...")
+
+                print(f"    ✓ Completed fetching metrics for {len(tenants)} tenant(s)")
 
         comprehensive_data.append(instance_data)
         print(f"  ✓ Completed")
@@ -263,6 +284,18 @@ def main():
         temp_dir = tempfile.mkdtemp()
         capacity_csv_path = os.path.join(temp_dir, f'oceanbase_capacity_assessment{freq_suffix}.csv')
         tenants_csv_path = os.path.join(temp_dir, f'oceanbase_tenants{freq_suffix}.csv')
+
+        # Calculate connection utilization percentage for each tenant
+        for tenant in tenants_data:
+            max_conn = tenant.get('max_connections', 0)
+            active_sess_avg = tenant.get('active_sessions_avg', 0)
+
+            # Calculate connection utilization percentage
+            if max_conn and max_conn > 0:
+                conn_util_pct = (active_sess_avg / max_conn) * 100
+                tenant['connection_utilization_pct'] = round(conn_util_pct, 2)
+            else:
+                tenant['connection_utilization_pct'] = 0.0
 
         # Export to temporary CSV files
         import pandas as pd

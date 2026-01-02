@@ -3,6 +3,7 @@ OceanBase Client for extracting instance and tenant information
 """
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from alibabacloud_oceanbasepro20190901.client import Client as OceanBaseClient
 from alibabacloud_oceanbasepro20190901 import models as oceanbase_models
 from alibabacloud_tea_openapi import models as api_models
@@ -455,27 +456,79 @@ class OceanBaseReporter:
         """
         metrics = {}
 
-        # Define tenant metrics to fetch with their output field names
-        # Optimized: Only fetch essential metrics
+        # OPTIMIZED: Only fetch metrics that are commonly available
+        # Tested and verified to return data for most tenants
         tenant_metric_map = {
-            # CPU metrics - percentage only (removed avg_cores metrics)
+            # CPU metrics - AVAILABLE
             'cpu_usage_percent_tenant': 'cpu_usage_percent',
+            # 'cpu_usage_avg_cores_tenant': 'cpu_usage_avg_cores',  # May not be available for all tenants
 
-            # Memory metrics - percentage only (removed memstore metrics)
+            # Memory metrics - AVAILABLE
             'memory_usage_tenant': 'memory_usage_percent',
+            # MemStore metrics - TEST IF AVAILABLE
+            # 'memstore_percent_tenant': 'memstore_percent',
+            # 'memstore_used_tenant': 'memstore_used_mb',
+            # 'memstore_total_tenant': 'memstore_total_mb',
 
-            # Storage/Disk metrics - NOT AVAILABLE in CloudMonitor API
-            # CloudMonitor does not provide tenant-level disk/storage metrics for OceanBase
-            # Storage metrics are only available at instance level (see Capacity Assessment tab)
-            # Tested metric names: disk_data_size_tenant, disk_usage_percent_tenant,
-            # disk_log_size_tenant, tenant_disk_usage, data_disk_usage_tenant, etc.
-            # All returned no data. Verified 2025-12-30.
-
-            # Session/Connection metrics
+            # Session/Connection metrics - AVAILABLE
             'active_sessions_tenant': 'active_sessions',
+            'all_session': 'all_session',
 
-            # Note: I/O response time metrics removed per user request
-            # Removed: io_read_rt_tenant, io_write_rt_tenant
+            # SQL Performance metrics - AVAILABLE
+            'sql_all_count': 'sql_qps',
+            'sql_all_rt': 'sql_avg_rt_ms',
+            # SQL breakdown by type - AVAILABLE (verified via testing)
+            'sql_select_count': 'sql_select_qps',
+            'sql_insert_count': 'sql_insert_qps',
+            'sql_update_count': 'sql_update_qps',
+            'sql_delete_count': 'sql_delete_qps',
+            'sql_replace_count': 'sql_replace_qps',
+
+            # Transaction metrics - AVAILABLE
+            'transaction_count': 'transaction_tps',
+            # 'transaction_rt': 'transaction_avg_rt_us',  # Often returns NaN
+            'transaction_partition_count': 'transaction_partition_tps',
+            'trans_commit_log_count': 'trans_commit_log_count',
+            'trans_commit_log_sync_rt': 'trans_commit_log_sync_rt_ms',
+
+            # Transaction log size - AVAILABLE
+            'clog_trans_log_total_size': 'clog_trans_log_size_mb',
+
+            # I/O metrics - PARTIALLY AVAILABLE
+            # 'io_count': 'io_ops_per_sec',  # NOT AVAILABLE (400 error)
+            # 'io_rt': 'io_avg_rt_us',  # NOT AVAILABLE (400 error)
+            # 'io_size': 'io_throughput_bytes',  # NOT AVAILABLE (400 error)
+            'io_read_count': 'io_read_ops_per_sec',  # AVAILABLE
+            'io_write_count': 'io_write_ops_per_sec',  # AVAILABLE
+            'io_read_rt': 'io_read_rt_us',  # AVAILABLE
+            'io_write_rt': 'io_write_rt_us',  # AVAILABLE
+            # 'io_read_size': 'io_read_bytes_per_sec',  # NOT AVAILABLE (400 error)
+            # 'io_write_size': 'io_write_bytes_per_sec',  # NOT AVAILABLE (400 error)
+
+            # Cache metrics - TEST IF AVAILABLE
+            # 'cache_hit': 'cache_hit_rate_percent',
+            # 'cache_size': 'cache_size_mb',
+
+            # Queue metrics - AVAILABLE
+            'request_queue_time': 'request_queue_time_us',
+
+            # Database wait events - TEST IF AVAILABLE
+            # 'ob_waiteven_count': 'wait_event_count',
+            # 'ob_sql_event': 'sql_event_count',
+
+            # Storage metrics - TEST IF AVAILABLE
+            # 'ob_tenant_log_disk_total_bytes': 'log_disk_total_gb',
+            # 'ob_tenant_log_disk_used_bytes': 'log_disk_used_gb',
+            # 'ob_tenant_server_required_size': 'server_required_size_gb',
+            # 'ob_tenant_server_data_size': 'data_size_gb',
+            # 'ob_tenant_binlog_disk_used': 'binlog_disk_used_gb',
+
+            # Network metrics - AVAILABLE (verified via testing)
+            'net_recv': 'network_recv_bytes_per_sec',
+            'net_send': 'network_sent_bytes_per_sec',
+
+            # Uptime - TEST IF AVAILABLE
+            # 'uptime': 'uptime_seconds',
         }
 
         for metric_name, output_field in tenant_metric_map.items():
@@ -515,13 +568,15 @@ class OceanBaseReporter:
                                 values.append(dp.get('Value'))
                             elif dp.get('Maximum') is not None:
                                 values.append(dp.get('Maximum'))
+                            elif dp.get('Max') is not None:
+                                values.append(dp.get('Max'))
 
                         if values:
-                            # Cap percentage metrics at 100% (CPU and memory utilization should not exceed 100%)
-                            # For percentage metrics (cpu_usage_percent, memory_usage), cap at 100%
-                            # Exclude size metrics (disk_data_size_gb, disk_log_size_gb) which are absolute values
-                            is_size_metric = 'size_gb' in output_field or 'size_mb' in output_field
-                            is_percentage_metric = ('percent' in output_field or 'usage' in metric_name) and not is_size_metric
+                            # Determine metric type for proper capping
+                            # Only cap percentage metrics at 100%
+                            # Absolute metrics (GB, MB, bytes, counts, RT, QPS, TPS) should NOT be capped
+                            is_percentage_metric = ('percent' in output_field or
+                                                   ('usage' in metric_name and 'percent' in metric_name))
 
                             # Calculate raw values including P95
                             raw_avg = sum(values) / len(values)
@@ -559,6 +614,94 @@ class OceanBaseReporter:
 
         return metrics
 
+    def fetch_tenants_parallel(
+        self,
+        instance_id: str,
+        instance_name: str,
+        tenants: List[Dict],
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        max_workers: int = 5
+    ) -> List[Dict]:
+        """
+        Fetch tenant metrics in parallel using threading
+
+        Args:
+            instance_id: OceanBase instance ID
+            instance_name: Instance name for labeling
+            tenants: List of tenant dictionaries
+            start_time: Start time in ISO format
+            end_time: End time in ISO format
+            max_workers: Maximum number of concurrent threads (default: 5)
+
+        Returns:
+            List of tenant dictionaries with metrics
+        """
+        def fetch_single_tenant(tenant: Dict) -> Dict:
+            """Fetch metrics for a single tenant"""
+            try:
+                # Add instance context
+                tenant['instance_id'] = instance_id
+                tenant['instance_name'] = instance_name
+
+                # Get detailed tenant resource allocation (from DescribeTenant API)
+                tenant_details = self.get_tenant_details(
+                    instance_id,
+                    tenant['tenant_id']
+                )
+                if tenant_details:
+                    tenant.update(tenant_details)
+
+                # Get comprehensive tenant metrics (from CloudMonitor API)
+                tenant_metrics = self.get_tenant_metrics(
+                    instance_id,
+                    tenant['tenant_id'],
+                    start_time=start_time,
+                    end_time=end_time
+                )
+                if tenant_metrics:
+                    tenant.update(tenant_metrics)
+
+                return tenant
+            except Exception as e:
+                print(f"      ⚠ Error fetching metrics for tenant {tenant.get('tenant_id', 'unknown')}: {str(e)}")
+                return tenant
+
+        if not tenants:
+            return []
+
+        print(f"    Fetching metrics for {len(tenants)} tenants (parallel mode, {max_workers} workers)...")
+
+        tenants_with_metrics = []
+        completed_count = 0
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_tenant = {
+                executor.submit(fetch_single_tenant, tenant): tenant
+                for tenant in tenants
+            }
+
+            # Process as they complete
+            for future in as_completed(future_to_tenant):
+                tenant = future_to_tenant[future]
+                try:
+                    result = future.result()
+                    tenants_with_metrics.append(result)
+                    completed_count += 1
+
+                    # Progress update every 10 tenants
+                    if completed_count % 10 == 0:
+                        print(f"      Progress: {completed_count}/{len(tenants)} tenants processed...")
+                except Exception as e:
+                    print(f"      ⚠ Failed to process tenant {tenant.get('tenant_id', 'unknown')}: {str(e)}")
+                    # Still add the tenant even if metrics failed
+                    tenants_with_metrics.append(tenant)
+                    completed_count += 1
+
+        print(f"    ✓ Completed fetching metrics for {len(tenants_with_metrics)} tenant(s)")
+        return tenants_with_metrics
+
     def get_utilization_metrics(
         self,
         instance_id: str,
@@ -567,7 +710,7 @@ class OceanBaseReporter:
         period_desc: str = "last 24 hours"
     ) -> Dict:
         """
-        Get CPU, Memory, and Disk utilization metrics with avg/min/max/P95
+        Get ALL instance-level CloudMonitor metrics with avg/min/max/P95
 
         Args:
             instance_id: OceanBase instance ID
@@ -576,21 +719,81 @@ class OceanBaseReporter:
             period_desc: Description of the period (for logging)
 
         Returns:
-            Dictionary with utilization metrics (for weekly/monthly: HIGHEST values)
+            Dictionary with ALL available instance metrics (for weekly/monthly: HIGHEST values)
         """
-        print(f"  Fetching utilization metrics ({period_desc})...")
+        print(f"  Fetching ALL instance metrics ({period_desc})...")
 
         metrics = {}
 
-        # CPU metrics
+        # OPTIMIZED: Only fetch metrics that are commonly available for OceanBase
+        # Metrics that returned errors in testing are commented out to speed up extraction
+        instance_metric_map = {
+            # CPU metrics - AVAILABLE
+            'cpu_usage': 'cpu',
+            'cpu_percent': 'cpu_percent',  # AVAILABLE (verified via testing)
+
+            # Memory metrics - AVAILABLE
+            'memory_percent': 'memory',
+            'memstore_percent': 'memstore_percent',
+
+            # QPS/TPS metrics - AVAILABLE
+            'qps': 'qps',
+            'tps': 'tps',
+            'qps_rt': 'qps_rt_ms',
+            'tps_rt': 'tps_rt_ms',
+
+            # Active sessions - AVAILABLE (verified via testing)
+            'active_session': 'active_sessions',
+
+            # Data size - NOT AVAILABLE
+            # 'data_size': 'data_size_gb',  # Returns 400 error
+
+            # Disk metrics - NOT AVAILABLE via CloudMonitor
+            # Use DescribeInstance API instead (already fetched)
+            # 'disk_usage': 'disk_usage_percent',  # Returns 400 error
+            # 'disk_used': 'disk_used_gb',  # Returns 400 error
+            # 'disk_total': 'disk_total_gb',  # Returns 400 error
+
+            # Network metrics - NOT AVAILABLE
+            # 'network_in': 'network_in_bytes_per_sec',  # Returns 400 error
+            # 'network_out': 'network_out_bytes_per_sec',  # Returns 400 error
+
+            # Connection metrics - NOT AVAILABLE
+            # 'connection_count': 'connection_count',  # Returns 400 error
+            # 'max_connections': 'max_connections_limit',  # Returns 400 error
+
+            # Cache metrics - NOT AVAILABLE
+            # 'cache_hit_rate': 'cache_hit_rate_percent',  # Returns 400 error
+
+            # I/O metrics - PARTIALLY AVAILABLE
+            'io_read_bytes': 'io_read_bytes_per_sec',
+            'io_write_bytes': 'io_write_bytes_per_sec',
+            # 'io_read_times': 'io_read_ops_per_sec',  # Returns 400 error
+            # 'io_write_times': 'io_write_ops_per_sec',  # Returns 400 error
+            # 'io_util': 'io_util_percent',  # Returns 400 error
+
+            # SQL metrics - NOT AVAILABLE at instance level
+            # Available at tenant level only
+            # 'sql_count': 'sql_count_per_sec',  # Returns 400 error
+            # 'sql_rt': 'sql_rt_ms',  # Returns 400 error
+            # 'sql_select': 'sql_select_per_sec',  # Returns 400 error
+            # 'sql_insert': 'sql_insert_per_sec',  # Returns 400 error
+            # 'sql_update': 'sql_update_per_sec',  # Returns 400 error
+            # 'sql_delete': 'sql_delete_per_sec',  # Returns 400 error
+        }
+
+        # Fetch only available metrics (much faster!)
+        for metric_name, output_prefix in instance_metric_map.items():
+            metric_data = self.get_metrics(instance_id, metric_name, start_time=start_time, end_time=end_time)
+            if metric_data:
+                metrics[f'{output_prefix}_avg'] = metric_data.get('avg', 0)
+                metrics[f'{output_prefix}_min'] = metric_data.get('min', 0)
+                metrics[f'{output_prefix}_max'] = metric_data.get('max', 0)
+                metrics[f'{output_prefix}_p95'] = metric_data.get('p95', 0)
+
+        # CPU metrics (legacy format for backward compatibility)
         cpu_metrics = self.get_metrics(instance_id, 'cpu_usage', start_time=start_time, end_time=end_time)
         if cpu_metrics:
-            # Store actual avg/min/max/p95 values (already capped at 100%)
-            metrics['cpu_avg'] = cpu_metrics.get('avg', 0)
-            metrics['cpu_min'] = cpu_metrics.get('min', 0)
-            metrics['cpu_max'] = cpu_metrics.get('max', 0)
-            metrics['cpu_p95'] = cpu_metrics.get('p95', 0)
-
             # Show if values were capped
             capped_indicator = ""
             if cpu_metrics.get('raw_max', 0) > 100.0:
